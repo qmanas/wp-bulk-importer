@@ -1,0 +1,965 @@
+<?php
+/**
+ * WB Product Importer
+ *
+ * A class to handle product imports for WB
+ *
+ * @package WB_Product_Importer
+ */
+
+// If this file is called directly, abort.
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+/**
+ * WB Product Importer class
+ */
+class WB_Product_Importer {
+    /**
+     * Base path for WB product images
+     */
+    const WB_IMAGE_BASE_PATH = WP_CONTENT_DIR . '/uploads/wb-knitted-products/';
+
+    /**
+     * Singleton instance
+     *
+     * @var WB_Product_Importer
+     */
+    private static $instance = null;
+
+    /**
+     * Get the singleton instance
+     *
+     * @return WB_Product_Importer Instance of the class
+     */
+    public static function instance() {
+        if (is_null(self::$instance)) {
+            self::$instance = new self();
+        }
+        return self::$instance;
+    }
+
+    /**
+     * Constructor
+     */
+    private function __construct() {
+        $this->init_hooks();
+    }
+
+    /**
+     * Initialize hooks
+     */
+    private function init_hooks() {
+        add_action('admin_init', [$this, 'handle_import_request']);
+        add_action('admin_menu', [$this, 'add_import_buttons_page']);
+        add_action('admin_post_wb_import_knitted', [$this, 'handle_knitted_import']);
+        add_action('admin_post_wb_import_woven', [$this, 'handle_woven_import']);
+    }
+
+    public function add_import_buttons_page() {
+        add_menu_page(
+            'WB Helper',
+            'WB Helper',
+            'manage_woocommerce',
+            'wb-helper',
+            [$this, 'render_import_buttons'],
+            'dashicons-admin-tools',
+            2
+        );
+    }
+
+    public function render_import_buttons() {
+        echo '<div class="wrap"><h1>WB Helper</h1>';
+        if (isset($_GET['wb_import_done'])) {
+            echo '<div class="notice notice-success is-dismissible"><p>Import completed.</p></div>';
+        }
+        // Dry run toggle (UI only for now)
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-bottom:1em;">';
+        echo '<input type="hidden" name="action" value="wb_import_knitted">';
+        echo '<label><input type="checkbox" name="dry_run" value="1"> Dry Run (simulate only)</label><br>';
+        submit_button('Import Knitted Products');
+        echo '</form>';
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin-bottom:1em;">';
+        echo '<input type="hidden" name="action" value="wb_import_woven">';
+        echo '<label><input type="checkbox" name="dry_run" value="1"> Dry Run (simulate only)</label><br>';
+        submit_button('Import Woven Products');
+        echo '</form>';
+        // Debug log panel
+        $logs = get_transient('wb_import_debug_log');
+        echo '<h2>Debug Log</h2>';
+        echo '<textarea rows="15" style="width:100%;font-family:monospace;" readonly>' . esc_textarea($logs ? implode("\n", $logs) : '') . '</textarea>';
+        echo '</div>';
+    }
+
+    public function handle_knitted_import() {
+        if (!current_user_can('manage_woocommerce')) wp_die('Permission denied');
+        $json_path = WP_CONTENT_DIR . '/uploads/wb_structure_knitted_products.json';
+        if (!file_exists($json_path)) wp_die('Knitted JSON not found');
+        $json = file_get_contents($json_path);
+        $raw_structure = json_decode($json, true);
+        if (!is_array($raw_structure)) wp_die('Invalid JSON');
+        if (!function_exists('prepare_product_import_data')) wp_die('Missing prepare_product_import_data');
+        $structured_data = prepare_product_import_data($raw_structure);
+        $dry_run = !empty($_POST['dry_run']);
+        $this->import_knitted_products($structured_data, $dry_run);
+        wp_redirect(admin_url('edit.php?post_type=product&page=wb-product-import&wb_import_done=1'));
+        exit;
+    }
+
+    public function handle_woven_import() {
+        if (!current_user_can('manage_woocommerce')) wp_die('Permission denied');
+        $folder_path = WP_CONTENT_DIR . '/uploads/wb-products/';
+        $dry_run = !empty($_POST['dry_run']);
+        $this->import_woven_products($folder_path, $dry_run);
+        wp_redirect(admin_url('edit.php?post_type=product&page=wb-product-import&wb_import_done=1'));
+        exit;
+    }
+
+    /**
+     * Handle manual import trigger via URL param ?run_wb=1
+     */
+    public function handle_import_request() {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        if (!isset($_GET['run_wb'])) {
+            return;
+        }
+
+        $this->run_import();
+        exit;
+    }
+
+    /**
+     * Run import using JSON at wp-content/uploads/wb_structure_knitted_products.json
+     */
+   
+    /**
+     * Import knitted products from structured data (JSON)
+     */
+    public function import_knitted_products($structured_data, $dry_run = false) {
+        $debug_log = [];
+    foreach ($structured_data as $product) {
+        $product_name = $product['product_name'];
+        $folder_path = $product['folder_path'];
+        $variations = $product['variations'];
+		
+$product_check = new WP_Query([
+    'post_type'      => 'product',
+    'post_status'    => 'publish',
+    'posts_per_page' => 1,
+    'title'          => $product_name,
+    'fields'         => 'ids'
+]);
+
+if (!empty($product_check->posts)) {
+    $post_id = $product_check->posts[0]; // get existing product ID
+    $is_new = false;
+} else {
+    $post_id = wp_insert_post([
+        'post_title'  => $product_name,
+        'post_status' => 'publish',
+        'post_type'   => 'product',
+    ]);
+    $is_new = true;
+}
+
+        if (is_wp_error($post_id)) {
+            $debug_log[] = "[ERROR] Failed to insert product: $product_name";
+            continue;
+        }
+
+        // Mark as variable product
+        if ($dry_run) {
+            $debug_log[] = "[DRY RUN] Would set product '$product_name' as variable.";
+        } else {
+            wp_set_object_terms($post_id, 'variable', 'product_type');
+        }
+
+        // Add the Color attribute
+        $color_values = array_keys($variations);
+        $attribute = new WC_Product_Attribute();
+        $attribute->set_name('pa_color');
+        $attribute->set_options(array_map('sanitize_title', $color_values));
+        $attribute->set_visible(true);
+        $attribute->set_variation(true);
+
+        $product_obj = wc_get_product($post_id);
+        if ($dry_run) {
+            $debug_log[] = "[DRY RUN] Would set attributes for product '$product_name'.";
+        } else {
+            $product_obj->set_attributes([$attribute]);
+            $product_obj->save();
+        }
+
+        // Add variations
+        foreach ($variations as $color => $images) {
+    // Try to find existing variation by color
+    $existing_var_id = null;
+
+    $variation_posts = get_children([
+        'post_parent' => $post_id,
+        'post_type'   => 'product_variation',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+    ]);
+
+    foreach ($variation_posts as $v) {
+        $v_color = get_post_meta($v->ID, 'attribute_pa_color', true);
+        if (strtolower($v_color) === strtolower(sanitize_title($color))) {
+            $existing_var_id = $v->ID;
+            break;
+        }
+    }
+
+    // Create or reuse variation
+    $variation_id = $existing_var_id ?: ($dry_run ? 0 : wp_insert_post([
+        'post_title'  => $product_name . ' - ' . $color,
+        'post_status' => 'publish',
+        'post_parent' => $post_id,
+        'post_type'   => 'product_variation',
+    ]));
+
+    if ($dry_run) {
+        $debug_log[] = "[DRY RUN] Would create/update variation for '$product_name' color '$color'.";
+    } else {
+        update_post_meta($variation_id, 'attribute_pa_color', sanitize_title($color));
+        update_post_meta($variation_id, '_regular_price', '10');
+        update_post_meta($variation_id, '_price', '10');
+
+        $variation = wc_get_product($variation_id);
+
+        // Assign featured image if missing
+        if ($variation && !$variation->get_image_id() && !empty($images['featured'])) {
+            $attachment_id = wb_get_or_upload_image($folder_path, $images['featured'], $variation_id);
+            if ($attachment_id) {
+                set_post_thumbnail($variation_id, $attachment_id);
+            }
+        }
+
+        // Assign gallery image if missing
+        $existing_gallery = get_post_meta($variation_id, 'rtwpvg_images', true);
+        if (empty($existing_gallery) && !empty($images['gallery'])) {
+            $gallery_id = wb_get_or_upload_image($folder_path, $images['gallery'], $variation_id);
+            if ($gallery_id) {
+                update_post_meta($variation_id, 'rtwpvg_images', [$gallery_id]);
+            }
+        }
+    }
+}
+
+    /**
+     * Get or upload an image to the media library
+     *
+     * @param string $folder_path Path to the folder containing the image
+     * @param string $filename Name of the image file
+     * @param int $post_id Optional post ID to attach the image to
+     * @return int Attachment ID or 0 on failure
+     */
+    public static function wb_get_or_upload_image($folder_path, $filename, $post_id = 0) {
+        $relative_path = str_replace('/Users/manas/Documents/AlphaCentuari/WB/Knitted Products/', '', $folder_path);
+        $local_path = self::WB_IMAGE_BASE_PATH . $relative_path . '/' . $filename;
+
+        if (!file_exists($local_path)) {
+            return 0;
+        }
+
+        // Check for existing image by hash
+        $existing = $this->wb_find_existing_image_by_filename($filename);
+        if ($existing) {
+            return $existing;
+        }
+
+    $upload_file = [
+        'name'     => basename($filename),
+        'tmp_name' => $local_path,
+    ];
+
+    $filetype = wp_check_filetype($filename);
+    $upload = wp_handle_sideload($upload_file, [ 'test_form' => false ]);
+
+    if (!empty($upload['error'])) return 0;
+
+    $attachment = [
+        'post_mime_type' => $filetype['type'],
+        'post_title'     => sanitize_file_name($filename),
+        'post_content'   => '',
+        'post_status'    => 'inherit'
+    ];
+
+    $attach_id = wp_insert_attachment($attachment, $upload['file'], $post_id);
+    require_once(ABSPATH . 'wp-admin/includes/image.php');
+    $attach_data = wp_generate_attachment_metadata($attach_id, $upload['file']);
+    wp_update_attachment_metadata($attach_id, $attach_data);
+
+    return $attach_id;
+}
+
+function wb_find_existing_image_by_filename($filename) {
+    $attachments = get_posts([
+        'post_type'  => 'attachment',
+        'post_status'=> 'inherit',
+        'numberposts'=> 1,
+        'meta_query' => [[
+            'key'     => '_wp_attached_file',
+            'value'   => $filename,
+            'compare' => 'LIKE'
+        ]]
+    ]);
+    return $attachments ? $attachments[0]->ID : 0;
+}
+
+function prepare_product_import_data($json_data) {
+    $products = [];
+
+    foreach ($json_data as $category) {
+        foreach ($category['subfolders'] ?? [] as $product_folder) {
+            $product_name = trim($product_folder['folder']);
+            $image_files = $product_folder['images'] ?? [];
+
+            $color_variations = [];
+
+           	foreach ($image_files as $img) {
+				// Extract product code from folder name
+				if (preg_match('/^(\d+)/', $product_name, $code_match)) {
+					$product_code = $code_match[1];
+				} else {
+					continue;
+				}
+
+				// Match only images for this product (ignore reused ones from others)
+				if (preg_match('/\\d+-([A-Z0-9\\-]+)-(\\d+)\\.jpg$/i', $img, $matches)) {
+					$color = ucwords(strtolower(str_replace('-', ' ', $matches[1])));
+					$index = (int) $matches[2];
+					$color_variations[$color][] = ['index' => $index, 'file' => $img];
+				}
+
+			}
+
+            // Sort and assign images
+            $variations = [];
+            foreach ($color_variations as $color => $imgs) {
+                usort($imgs, fn($a, $b) => $a['index'] <=> $b['index']);
+                $featured = $imgs[0]['file'] ?? null;
+                $gallery = $imgs[1]['file'] ?? null;
+                $variations[$color] = [
+                    'featured' => $featured,
+                    'gallery'  => $gallery,
+                ];
+            }
+
+            $products[] = [
+                'product_name' => $product_name,
+                'folder_path' => $product_folder['path'],
+                'variations' => $variations,
+            ];
+        }
+    }
+
+    return $products;
+}
+
+function wb_sync_knitted_variation_images() {
+    $json_path = WP_CONTENT_DIR . '/uploads/wb_structure_knitted_products.json';
+
+    if (!file_exists($json_path)) {
+        echo '❌ JSON file not found.';
+        return;
+    }
+
+    $json = file_get_contents($json_path);
+    $raw_structure = json_decode($json, true);
+    if (!is_array($raw_structure)) {
+        echo '❌ Invalid JSON structure.';
+        return;
+    }
+
+    $structured_data = prepare_product_import_data($raw_structure);
+    $synced_count = 0;
+
+    foreach ($structured_data as $product) {
+        $product_name = $product['product_name'];
+        $folder_path = $product['folder_path'];
+        $variations = $product['variations'];
+
+        // Find existing product by title
+        $existing_product = new WP_Query([
+            'post_type' => 'product',
+            'title'     => $product_name,
+            'fields'    => 'ids',
+            'post_status' => 'publish',
+            'posts_per_page' => 1
+        ]);
+
+        if (empty($existing_product->posts)) continue;
+        $product_id = $existing_product->posts[0];
+
+        foreach ($variations as $color => $image_set) {
+            $variation_id = wb_find_variation_id($product_id, $color);
+            if (!$variation_id) continue;
+
+            // Upload or fetch images
+            $featured_id = $image_set['featured'] ? wb_get_or_upload_image($folder_path, $image_set['featured']) : 0;
+            $gallery_id  = $image_set['gallery'] ? wb_get_or_upload_image($folder_path, $image_set['gallery']) : 0;
+
+            if ($featured_id) update_post_meta($variation_id, '_thumbnail_id', $featured_id);
+            if ($gallery_id)  update_post_meta($variation_id, '_product_image_gallery', (string)$gallery_id);
+        }
+
+        $synced_count++;
+    }
+
+    echo "✅ Synced $synced_count existing products.";
+}
+
+function wb_find_variation_id($product_id, $color_name) {
+    $variations = get_posts([
+        'post_type'   => 'product_variation',
+        'post_parent' => $product_id,
+        'numberposts' => -1,
+        'post_status' => ['publish', 'private'],
+    ]);
+
+    foreach ($variations as $variation) {
+        $attr = get_post_meta($variation->ID, 'attribute_pa_color', true);
+       if (sanitize_title($attr) === sanitize_title($color_name)) {
+
+            return $variation->ID;
+        }
+    }
+
+    return 0;
+}
+
+function import_images_as_products($folder_path, $batch_size = 2000) {
+    if (!class_exists('WP_Query') || !class_exists('WC_Product')) return;
+
+    if (!is_dir($folder_path)) {
+        error_log("❌ Directory does not exist: " . $folder_path);
+        return;
+    }
+
+    // **Get Total Image Count (only once)**
+    $total_images = get_option('total_images_to_import', 0);
+    $imported_count = get_option('imported_images_count', 0);
+
+    // **Stop if all images are imported**
+    if ($imported_count >= $total_images && $total_images !== 0) {
+        error_log("✅ All images have already been imported. Exiting.");
+        return;
+    }
+
+    if ($total_images === 0) {
+        $total_images = count_images_in_directory($folder_path);
+        update_option('total_images_to_import', $total_images);
+        error_log("📸 Total Valid Images Found: {$total_images}");
+    }
+
+    $upload_dir = wp_upload_dir();
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($folder_path, RecursiveDirectoryIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::SELF_FIRST
+    );
+    $processed_count = 0;
+
+    // ✅ Path Normalization Helper Function
+    foreach ($iterator as $file) {
+        
+        error_log("📸 Total Images to Import: {$total_images}");
+error_log("✅ Total Images Imported: {$imported_count}");
+$remaining_images = $total_images - $imported_count;
+error_log("⏳ Remaining Images to Import: {$remaining_images}");
+        if ($file->isDir()) continue;
+
+        // Validate file type
+        $ext = strtolower($file->getExtension());
+        $filename = $file->getBasename();
+        if (!in_array($ext, ['jpg', 'jpeg', 'png', 'gif']) || strpos($filename, '.') === 0) continue;
+
+        // Construct image path
+        $image_path = $file->getRealPath();
+        $original_name = $file->getBasename('.' . $ext);
+		// Extract top-level folder name (if available)
+		$top_folder = !empty($categories) ? strtolower($categories[0][0]) : 'x'; // default to 'x' if none
+
+		// Format new image name
+		$image_name = 'wb-' . $top_folder . '-' . $original_name;
+//         $image_name = 'WB-' . $original_name; // Prefix with WB-
+
+        // ✅ Check if this image has already been imported (use both title and image path)
+        // Improved unique hash key with normalized path
+        $relative_path = self::normalize_path(str_replace($folder_path, '', $image_path));
+        $hash_key = 'imported_' . md5($relative_path);
+
+        if (get_option($hash_key)) {
+            error_log("🚫 Already imported (Meta Check): $image_name");
+            continue;
+        }
+
+        // ✅ Prevent duplicate WooCommerce products by checking image URL instead of just title
+        $existing_product = get_posts([
+            'post_type'      => 'product',
+            'meta_query'     => [
+                [
+                    'key'     => '_imported_image',
+                    'value'   => self::normalize_path($image_path),
+                    'compare' => '='
+                ]
+            ],
+            'post_status'    => 'any',
+            'posts_per_page' => 1,
+            'fields'         => 'ids',
+        ]);
+
+        if ($existing_product) {
+            error_log("🚫 Skipping existing product (Meta Check): " . $image_name);
+            update_option($hash_key, true); // Mark image as processed
+            continue;
+        }
+
+        // ✅ Extract categories from folder structure without redundant paths
+        $relative_folder = self::normalize_path(str_replace($folder_path, '', $file->getPath()));
+        $categories = array_filter(explode(DIRECTORY_SEPARATOR, $relative_folder));
+        $categories = array_values($categories);
+        error_log("📂 Extracted Categories: " . implode(", ", $categories));
+
+        // ✅ Upload image to Media Library
+        $attachment_id = upload_image_to_media_library($image_path, $image_name);
+        if (!$attachment_id) {
+            error_log("❌ Failed to upload image: " . $image_path);
+            continue;
+        }
+
+        // ✅ Create WooCommerce Product
+        $product = new WC_Product_Simple();
+        $product->set_name($image_name);
+        $product->set_status('publish');
+        $product->set_description('Description');
+        $product->set_catalog_visibility('visible');
+        $product->set_price(10.00);
+        $product->set_regular_price(10.00);
+        $product->set_manage_stock(true);
+        $product->set_stock_quantity(1000);
+        $product->set_stock_status('instock');
+        $product_id = $product->save();
+
+        if (!$product_id || is_wp_error($product_id)) {
+            error_log("❌ Failed to save product: $image_name");
+            continue;
+        }
+
+        // ✅ Set categories (only if non-empty)
+        if (!empty($categories)) {
+            wp_set_object_terms($product_id, $categories, 'product_cat');
+            error_log("✅ Product created: $image_name | Categories: " . implode(", ", $categories));
+        }
+
+        // ✅ Set image as thumbnail
+        set_post_thumbnail($product_id, $attachment_id);
+
+        // ✅ Set custom meta
+        update_post_meta($product_id, '_imported_image', self::normalize_path($image_path));
+
+        // ✅ Increment imported count
+        $imported_count++;
+        update_option('imported_images_count', $imported_count);
+        update_option($hash_key, true); // Mark as processed
+
+        // ✅ Stop if total images are processed
+        if ($imported_count >= $total_images) {
+            update_option('import_images_done', '1');
+            error_log("✅ All images imported. Exiting.");
+            return;
+        }
+
+        $processed_count++;
+
+        // ✅ Stop processing once batch size is reached
+        if ($processed_count >= $batch_size) {
+            error_log("🛑 Batch completed. Processed {$batch_size} images.");
+            return;
+        }
+    }
+}
+
+function sync_imported_products_with_folder($folder_path) {
+    if (!class_exists('WC_Product')) return;
+
+    if (!is_dir($folder_path)) {
+        error_log("❌ Directory does not exist: " . $folder_path);
+        return;
+    }
+
+    // Helper to normalize paths
+    function self::normalize_path($path) {
+        return trim(str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $path), DIRECTORY_SEPARATOR);
+    }
+
+    // Step 1: Build set of all existing image paths in folder
+    $existing_images = [];
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($folder_path, RecursiveDirectoryIterator::SKIP_DOTS)
+    );
+
+    foreach ($iterator as $file) {
+        if ($file->isDir()) continue;
+        $ext = strtolower($file->getExtension());
+        if (in_array($ext, ['jpg', 'jpeg', 'png', 'gif'])) {
+            $existing_images[] = self::normalize_path($file->getRealPath());
+        }
+    }
+
+    // Convert to fast lookup set
+    $existing_image_set = array_flip($existing_images);
+
+    // Step 2: Get all products with _imported_image meta
+    $products = new WP_Query([
+        'post_type'  => 'product',
+        'post_status'=> ['publish', 'draft'],
+        'meta_query' => [
+            [
+                'key'     => '_imported_image',
+                'compare' => 'EXISTS'
+            ]
+        ],
+        'posts_per_page' => -1,
+        'fields'         => 'ids'
+    ]);
+
+    if (empty($products->posts)) {
+        error_log("ℹ️ No imported products found.");
+        return;
+    }
+
+    // Step 3: Compare and update status
+    foreach ($products->posts as $product_id) {
+        $stored_path = get_post_meta($product_id, '_imported_image', true);
+        $normalized_path = self::normalize_path($stored_path);
+
+        if (!isset($existing_image_set[$normalized_path])) {
+            // Image no longer exists — unpublish the product
+            wp_update_post([
+                'ID' => $product_id,
+                'post_status' => 'draft'
+            ]);
+            error_log("🚫 Unpublished missing image product ID: {$product_id}");
+        } else {
+            // Optional: Re-publish if image is back (remove if not needed)
+            $current_status = get_post_status($product_id);
+            if ($current_status !== 'publish') {
+                wp_update_post([
+                    'ID' => $product_id,
+                    'post_status' => 'publish'
+                ]);
+                error_log("✅ Re-published existing image product ID: {$product_id}");
+            }
+        }
+    }
+
+    error_log("🔁 Folder sync complete.");
+}
+
+function reimport_specific_folder($folder_name, $folder_path) {
+    // Delete matching products
+      $folder_name = urldecode(sanitize_text_field($_GET['reimport_folder']));
+    $products = get_posts([
+        'post_type'   => 'product',
+        'post_status' => 'any',
+        'numberposts' => -1,
+        'meta_query'  => [
+            [
+                'key'     => '_imported_image',
+                'value'   => $folder_name,
+                'compare' => 'LIKE'
+            ]
+        ]
+    ]);
+
+    foreach ($products as $product) {
+        $product_id = $product->ID;
+        $image_path = get_post_meta($product_id, '_imported_image', true);
+        $relative = str_replace($folder_name, '', $image_path);
+        $hash_key = 'imported_' . md5($relative);
+
+        // Delete thumbnail first
+        $thumb_id = get_post_thumbnail_id($product_id);
+        if ($thumb_id) {
+            wp_delete_attachment($thumb_id, true);
+        }
+
+        wp_delete_post($product_id, true);
+        delete_option($hash_key);
+
+        error_log("🗑️ Deleted product: $product_id, hash: $hash_key");
+    }
+
+    // Reset total image counters
+    delete_option('total_images_to_import');
+    delete_option('imported_images_count');
+    error_log("♻️ Reset import counters");
+
+    // Log folder path being imported
+    error_log("📂 Attempting import from folder: $folder_path");
+
+    // Import and log images being picked up
+    if (function_exists('count_images_in_directory')) {
+        $image_count = count_images_in_directory($folder_path);
+        error_log("📸 Images found for import: $image_count");
+    }
+
+    if (function_exists('import_images_as_products')) {
+        import_images_as_products($folder_path, 2000);
+        error_log("✅ Called import_images_as_products()");
+    } else {
+        error_log("❌ import_images_as_products() is not defined.");
+    }
+}
+
+    /**
+     * Import woven products by scanning a folder for images
+     */
+    public function import_woven_products($folder_path, $dry_run = false) {
+        $debug_log = [];
+    if (!class_exists('WC_Product')) return;
+
+    if (!is_dir($folder_path)) {
+        error_log("❌ Directory does not exist: " . $folder_path);
+        return;
+    }
+
+    // Helper: Normalize Path
+    private static function normalize_path($path) {
+        return trim(str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $path), DIRECTORY_SEPARATOR);
+    }
+
+    // Helper: Upload Image to Media Library
+    private static function upload_image_to_media_library($image_path, $image_name) {
+        if (!file_exists($image_path)) return false;
+
+        $wp_filetype = wp_check_filetype($image_path);
+        $upload_dir  = wp_upload_dir();
+        $filename    = basename($image_path);
+
+        $new_path = $upload_dir['path'] . '/' . $filename;
+        copy($image_path, $new_path);
+
+        $attachment = [
+            'post_mime_type' => $wp_filetype['type'],
+            'post_title'     => sanitize_file_name($image_name),
+            'post_content'   => '',
+            'post_status'    => 'inherit',
+        ];
+
+        $attach_id = wp_insert_attachment($attachment, $new_path);
+        require_once ABSPATH . 'wp-admin/includes/image.php';
+        $attach_data = wp_generate_attachment_metadata($attach_id, $new_path);
+        wp_update_attachment_metadata($attach_id, $attach_data);
+
+        return $attach_id;
+    }
+
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($folder_path, RecursiveDirectoryIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::SELF_FIRST
+    );
+
+    foreach ($iterator as $file) {
+        if ($file->isDir()) continue;
+
+        $ext = strtolower($file->getExtension());
+        $filename = $file->getBasename();
+        if (!in_array($ext, ['jpg', 'jpeg', 'png', 'gif']) || strpos($filename, '.') === 0) continue;
+
+        $image_path = $file->getRealPath();
+        $relative_path = self::normalize_path(str_replace($folder_path, '', $image_path));
+        $hash_key = 'imported_' . md5($relative_path);
+        $file_mtime = filemtime($image_path);
+
+        $image_name = 'wb-' . strtolower(pathinfo($filename, PATHINFO_FILENAME));
+
+        // ✅ Extract categories
+        $relative_folder = self::normalize_path(str_replace($folder_path, '', $file->getPath()));
+        $categories = array_filter(explode(DIRECTORY_SEPARATOR, $relative_folder));
+        $categories = array_values($categories);
+
+        // ✅ Check if product already exists
+        $existing_product = get_posts([
+            'post_type'      => 'product',
+            'meta_query'     => [
+                ['key' => '_imported_image_path', 'value' => $relative_path],
+            ],
+            'post_status'    => 'any',
+            'posts_per_page' => 1,
+            'fields'         => 'ids',
+        ]);
+
+        // ✅ If exists, check modification time
+        if ($existing_product) {
+            $product_id = $existing_product[0];
+            $existing_mtime = get_post_meta($product_id, '_image_file_mtime', true);
+
+            if ($existing_mtime == $file_mtime) {
+                error_log("⏩ Unchanged: $image_name");
+                continue;
+            }
+
+            // ✅ Update image and product
+            $attachment_id = upload_image_to_media_library($image_path, $image_name);
+            if ($attachment_id) {
+                set_post_thumbnail($product_id, $attachment_id);
+                update_post_meta($product_id, '_imported_image_path', $relative_path);
+                update_post_meta($product_id, '_image_file_mtime', $file_mtime);
+
+                $debug_log[] = "[SUCCESS] Synced New Product: $image_name";
+            }
+        }
+    }
+
+    set_transient('wb_import_debug_log', $debug_log);
+    error_log("🔁 Sync completed for folder: $folder_path");
+}
+
+// Function to display count in dashboard widget
+function image_count_dashboard_widget() {
+    $folder_path = WP_CONTENT_DIR . '/uploads/wb-products/';
+    $image_count = count_images_in_directory($folder_path);
+    echo "<p><strong>Total Images Found:</strong> $image_count</p>";
+}
+
+// Register dashboard widget
+function register_image_count_widget() {
+    wp_add_dashboard_widget('image_count_widget', 'Image Import Status', 'image_count_dashboard_widget');
+}
+add_action('wp_dashboard_setup', 'register_image_count_widget');
+
+
+function update_category_featured_images() {
+    // Get all WooCommerce categories
+    $categories = get_terms([
+        'taxonomy'   => 'product_cat',
+        'hide_empty' => false,
+    ]);
+    
+    foreach ($categories as $category) {
+        // Get a random product from the category
+        $args = [
+            'post_type'      => 'product',
+            'posts_per_page' => 1,
+            'orderby'        => 'rand',
+            'tax_query'      => [[
+                'taxonomy' => 'product_cat',
+                'field'    => 'term_id',
+                'terms'    => $category->term_id,
+            ]],
+        ];
+        
+        $products = get_posts($args);
+        
+        if (!empty($products)) {
+            $product_id = $products[0]->ID;
+            $thumbnail_id = get_post_thumbnail_id($product_id);
+            
+            if ($thumbnail_id) {
+                // Update the category thumbnail
+                update_term_meta($category->term_id, 'thumbnail_id', $thumbnail_id);
+            }
+        }
+    }
+}
+
+function fuzzy_match_wc_category_product_count() {
+    if ( ! is_product() && ! is_product_category() ) return '';
+
+    global $post;
+
+    if ( is_product() ) {
+        $search_term = get_the_title( $post->ID );
+    } elseif ( is_product_category() ) {
+        $term = get_queried_object();
+        if ( $term && isset($term->slug) ) {
+            // Try direct match by slug first
+            $exact_match = get_term_by( 'slug', $term->slug, 'product_cat' );
+            if ( $exact_match ) {
+                return '<p>' . esc_html( $exact_match->count ) . ' items</p>';
+            }
+        }
+        $search_term = $term->name ?? '';
+    }
+
+    if ( empty( $search_term ) ) return '<p>No valid term.</p>';
+
+    // Normalize text for fuzzy logic
+    $normalize_text = function( $text ) {
+        $text = strtolower( $text );
+        $text = str_replace( ['-', '_'], ' ', $text );
+        $text = preg_replace( '/[^a-z0-9 ]/', '', $text );
+        return trim( $text );
+    };
+
+    $normalized_search = $normalize_text( $search_term );
+
+    $categories = get_terms( array(
+        'taxonomy' => 'product_cat',
+        'hide_empty' => false,
+    ));
+
+    $best_match = null;
+    $lowest_distance = PHP_INT_MAX;
+
+    foreach ( $categories as $cat ) {
+        $normalized_cat = $normalize_text( $cat->name );
+        $distance = levenshtein( $normalized_search, $normalized_cat );
+
+        if ( $distance < $lowest_distance ) {
+            $lowest_distance = $distance;
+                }
+
+                // Then add the new ACF fields
+                foreach ($acf_fields as $key => $value) {
+                    if (function_exists('update_field')) {
+                        update_field($key, $value, $product_id);
+                    } else {
+                        update_post_meta($product_id, $key, $value);
+                    }
+                }
+                $imported++;
+            }
+
+            $matched_categories[] = $category;
+        }
+
+        // Remove duplicates and sort
+        $matched_categories = array_unique($matched_categories);
+        sort($matched_categories);
+
+        $unmatched_categories = array_unique($unmatched_categories);
+        sort($unmatched_categories);
+
+        $message = "✅ Import completed for $imported products across categories.<br>";
+        $message .= "<strong>Matched categories:</strong><br>" . implode('<br>', $matched_categories) . "<br><br>";
+
+        if (!empty($unmatched_categories)) {
+            $message .= "<strong>Unmatched categories (no mapping found):</strong><br>" . implode('<br>', $unmatched_categories);
+        $placeholders = implode(',', array_fill(0, count($media_ids_to_keep), '%d'));
+        
+        // Get all media file IDs except the oldest 20
+        $media_ids_to_delete = $wpdb->get_col(
+            $wpdb->prepare(
+                "SELECT ID FROM {$wpdb->posts} WHERE post_type = 'attachment' AND ID NOT IN ($placeholders)",
+                ...$media_ids_to_keep
+            )
+        );
+        
+        // Delete each media file
+        foreach ($media_ids_to_delete as $media_id) {
+            wp_delete_attachment($media_id, true); // true ensures permanent deletion
+        }
+    }
+}
+
+
+
+}
+

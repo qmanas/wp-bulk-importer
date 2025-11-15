@@ -1,0 +1,264 @@
+<?php
+/**
+ * Admin interface functionality for WB Product Importer
+ */
+trait WB_Product_Importer_Admin {
+    /**
+     * Initialize admin hooks
+     */
+    private function init_hooks() {
+        // Admin hooks
+        add_action('admin_menu', [$this, 'register_admin_menu']);
+        add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_assets']);
+        add_action('admin_init', [$this, 'register_settings']);
+        
+        // AJAX handlers
+        add_action('wp_ajax_wb_import_products', [$this, 'ajax_import_products']);
+        add_action('wp_ajax_wb_import_acf_data', [$this, 'ajax_import_acf_data']);
+        
+        // Plugin action links
+        add_filter('plugin_action_links_' . WB_PRODUCT_IMPORTER_BASENAME, [$this, 'add_plugin_action_links']);
+    }
+    
+    /**
+     * Render the ACF import form
+     */
+    private function render_acf_import_form() {
+        $default_path = ABSPATH . 'wp-content/uploads/woocommerce_acf_data_with_categories.json';
+        ?>
+        <div class="wrap">
+            <h2><?php _e('Import ACF Data', 'wb-importer'); ?></h2>
+            
+            <div class="card">
+                <h3><?php _e('Import ACF Data from JSON', 'wb-importer'); ?></h3>
+                
+                <p><?php _e('Import ACF field data for products from a JSON file. The JSON should contain an array of products with ACF fields.', 'wb-importer'); ?></p>
+                
+                <form id="wb-acf-import-form" method="post" action="">
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row">
+                                <label for="acf-json-path"><?php _e('JSON File Path', 'wb-importer'); ?></label>
+                            </th>
+                            <td>
+                                <input type="text" id="acf-json-path" name="acf_json_path" class="regular-text" 
+                                       value="<?php echo esc_attr($default_path); ?>">
+                                <p class="description">
+                                    <?php _e('Enter the full path to the ACF JSON file on your server.', 'wb-importer'); ?>
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
+                    
+                    <p class="submit">
+                        <button type="button" id="import-acf-data" class="button button-primary">
+                            <?php _e('Import ACF Data', 'wb-importer'); ?>
+                        </button>
+                        <span class="spinner" style="float: none; margin-top: 0;"></span>
+                    </p>
+                    
+                    <div id="acf-import-results" class="notice" style="display: none; margin-top: 20px;"></div>
+                </form>
+            </div>
+        </div>
+        
+        <script>
+        jQuery(document).ready(function($) {
+            $('#import-acf-data').on('click', function(e) {
+                e.preventDefault();
+                
+                var $button = $(this);
+                var $spinner = $button.next('.spinner');
+                var $results = $('#acf-import-results');
+                
+                $button.prop('disabled', true);
+                $spinner.addClass('is-active');
+                $results.hide().removeClass('notice-success notice-error');
+                
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'wb_import_acf_data',
+                        file_path: $('#acf-json-path').val(),
+                        nonce: '<?php echo wp_create_nonce('wb_import_acf_data'); ?>'
+                    },
+                    success: function(response) {
+                        if (response.success) {
+                            $results.html(response.data).addClass('notice-success').show();
+                        } else {
+                            $results.html('<p>' + response.data + '</p>').addClass('notice-error').show();
+                        }
+                    },
+                    error: function() {
+                        $results.html('<p>An error occurred while processing your request.</p>').addClass('notice-error').show();
+                    },
+                    complete: function() {
+                        $button.prop('disabled', false);
+                        $spinner.removeClass('is-active');
+                    }
+                });
+            });
+        });
+        </script>
+        <?php
+    }
+    
+    /**
+     * Register admin menu items
+     */
+    public function register_admin_menu() {
+        // Only add menu if user has manage_options capability
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        add_menu_page(
+            __('WB Helper', 'wb-importer'),
+            __('WB Helper', 'wb-importer'),
+            'manage_options',
+            'wb-helper',
+            [$this, 'render_admin_page'],
+            'dashicons-admin-generic',
+            56
+        );
+    }
+
+    /**
+     * Render the admin page
+     */
+    public function render_admin_page() {
+        // Check user capabilities
+        if (!current_user_can('manage_options')) {
+            wp_die(__('You do not have sufficient permissions to access this page.', 'wb-importer'));
+        }
+
+        // Check if WooCommerce is active
+        if (!class_exists('WooCommerce')) {
+            echo '<div class="notice notice-error"><p>';
+            _e('WooCommerce needs to be installed and activated to use this plugin.', 'wb-importer');
+            echo '</p></div>';
+            return;
+        }
+        
+        // Get current tab, default to 'import'
+        $current_tab = isset($_GET['tab']) ? sanitize_key($_GET['tab']) : 'import';
+        
+        // Define tabs
+        $tabs = [
+            'import' => __('Import Products', 'wb-importer'),
+            'acf-import' => __('Import ACF Data', 'wb-importer'),
+            'settings' => __('Settings', 'wb-importer'),
+            'logs' => __('Logs', 'wb-importer'),
+        ];
+        
+        // Output the page
+        ?>
+        <div class="wrap wb-wrapper">
+            <div class="wb-header">
+                <h1><?php echo esc_html__('WB Product Importer', 'wb-importer'); ?></h1>
+                <span class="wb-version">v<?php echo esc_html(WB_PRODUCT_IMPORTER_VERSION); ?></span>
+            </div>
+            
+            <nav class="wb-tabs">
+                <?php foreach ($tabs as $tab_id => $tab_name) : ?>
+                    <a href="?page=wb-helper&tab=<?php echo esc_attr($tab_id); ?>" 
+                       class="wb-tab <?php echo $current_tab === $tab_id ? 'wb-tab-active' : ''; ?>">
+                        <?php echo esc_html($tab_name); ?>
+                    </a>
+                <?php endforeach; ?>
+            </nav>
+            
+            <div class="wb-card">
+                <div class="wb-card-body">
+                    <?php 
+                    // Include the appropriate template based on the current tab
+                    $template = WB_PRODUCT_IMPORTER_PATH . 'includes/admin/views/tab-' . $current_tab . '.php';
+                    if (file_exists($template)) {
+                        include $template;
+                    } else {
+                        include WB_PRODUCT_IMPORTER_PATH . 'includes/admin/views/tab-import.php';
+                    }
+                    
+                    // Add ACF import form
+                    if ($current_tab === 'acf-import') {
+                        $this->render_acf_import_form();
+                    }
+                    ?>
+                </div>
+            </div>
+        </div>
+        <?php
+    }
+
+    /**
+     * Register plugin settings
+     */
+    public function register_settings() {
+        register_setting('wb_importer_settings', 'wb_importer_options');
+        
+        // General settings section
+        add_settings_section(
+            'wb_importer_general',
+            __('General Settings', 'wb-importer'),
+            [$this, 'render_general_settings_section'],
+            'wb-importer-settings'
+        );
+        
+        // Add settings fields here
+        add_settings_field(
+            'default_import_dir',
+            __('Default Import Directory', 'wb-importer'),
+            [$this, 'render_text_field'],
+            'wb-importer-settings',
+            'wb_importer_general',
+            [
+                'id' => 'default_import_dir',
+                'description' => __('Default directory to look for product data', 'wb-importer')
+            ]
+        );
+    }
+
+    /**
+     * Render a text field
+     *
+     * @param array $args Field arguments
+     */
+    public function render_text_field($args) {
+        $options = get_option('wb_importer_options');
+        $value = isset($options[$args['id']]) ? esc_attr($options[$args['id']]) : '';
+        ?>
+        <input type="text" 
+               id="<?php echo esc_attr($args['id']); ?>" 
+               name="wb_importer_options[<?php echo esc_attr($args['id']); ?>]" 
+               value="<?php echo $value; ?>" 
+               class="regular-text">
+        <?php if (!empty($args['description'])) : ?>
+            <p class="description"><?php echo esc_html($args['description']); ?></p>
+        <?php endif;
+    }
+
+    /**
+     * Render the general settings section
+     */
+    public function render_general_settings_section() {
+        echo '<p>' . __('Configure general settings for the WB Product Importer.', 'wb-importer') . '</p>';
+    }
+
+    /**
+     * Add action links to the plugins page
+     *
+     * @param array $links Existing plugin action links
+     * @return array Modified plugin action links
+     */
+    public function add_plugin_action_links($links) {
+        $settings_link = sprintf(
+            '<a href="%s">%s</a>',
+            admin_url('admin.php?page=wb-helper&tab=settings'),
+            __('Settings', 'wb-importer')
+        );
+        
+        array_unshift($links, $settings_link);
+        return $links;
+    }
+}
