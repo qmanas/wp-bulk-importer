@@ -1,5 +1,8 @@
 # 📦 WP Importer: Enterprise Product Migration Suite
 
+> **[Self-Contained Workflow Utility]**
+> *A functional WordPress CLI suite built to handle high-volume (10k+ item) product migrations with complex relationship mapping and media ingestion.*
+
 A WordPress product migration suite for importing large-scale datasets (10k+ items). Built with a focus on reliability, relationship management, and data integrity.
 
 - ⚙️ **Relationship Mapping**: Logic for handling complex product relationships (categories, tags, meta-fields).
