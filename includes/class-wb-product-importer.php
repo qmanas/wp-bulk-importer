@@ -1975,7 +1975,7 @@ class WB_Product_Importer
      */
     public function wb_get_or_upload_image($folder_path, $filename, $post_id = 0)
     {
-        $relative_path = str_replace('/Users/manas/Documents/AlphaCentuari/WB/Knitted Products/', '', $folder_path);
+        $relative_path = str_replace('/Users/developer/projects/WB/Knitted Products/', '', $folder_path);
         $local_path = self::WB_IMAGE_BASE_PATH . $relative_path . '/' . $filename;
 
         if (!file_exists($local_path)) {
@@ -2471,7 +2471,7 @@ class WB_Product_Importer
 
         // Path to the ACF JSON data file - try multiple possible locations
         $possible_paths = [
-            '/Users/manas/Documents/AlphaCentuari/mill2mall/woocommerce_acf_data_with_categories.json',
+            '/Users/developer/projects/mill2mall/woocommerce_acf_data_with_categories.json',
             dirname(__FILE__) . '/../../../woocommerce_acf_data_with_categories.json',
             dirname(__FILE__) . '/woocommerce_acf_data_with_categories.json',
             ABSPATH . 'wp-content/uploads/woocommerce_acf_data_with_categories.json',

@@ -259,7 +259,7 @@ if (!empty($product_check->posts)) {
      * @return int Attachment ID or 0 on failure
      */
     public static function wb_get_or_upload_image($folder_path, $filename, $post_id = 0) {
-        $relative_path = str_replace('/Users/manas/Documents/AlphaCentuari/WB/Knitted Products/', '', $folder_path);
+        $relative_path = str_replace('/Users/developer/projects/WB/Knitted Products/', '', $folder_path);
         $local_path = self::WB_IMAGE_BASE_PATH . $relative_path . '/' . $filename;
 
         if (!file_exists($local_path)) {
